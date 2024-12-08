@@ -24,10 +24,10 @@ camera.position.z = 4;
 
 // Create a canvas for text texture
 const textCanvas = document.createElement("canvas");
+const ctx = textCanvas.getContext("2d");
 const dpr = Math.min(window.devicePixelRatio, 2); // Cap at 2 to match shader behavior
 textCanvas.width = window.innerWidth * dpr;
 textCanvas.height = window.innerHeight * dpr;
-const ctx = textCanvas.getContext("2d");
 
 // Scale canvas context by DPR
 ctx.scale(dpr, dpr);
@@ -78,7 +78,7 @@ const vertexShader = `
     vec4 worldPos = modelMatrix * vec4(position, 1.0);
     vec4 mvPosition = viewMatrix * worldPos;
     eye = vec3(0.0, 0.0, -1.0); 
-    worldEye = normalize(cameraPosition - worldPos.xyz);
+    worldEye = normalize(cameraPosition - mvPosition.xyz);
     vUv = uv;
     gl_Position = projectionMatrix * mvPosition;
   }
@@ -110,11 +110,26 @@ varying vec3 worldEye;
 varying vec2 vUv;
 
 #define PI ${Math.PI}
+#define time uTime
 const int LOOP = 16;
 #define iorRatioRed 1.0/uIorR;
 #define iorRatioGreen 1.0/uIorG;
 #define iorRatioBlue 1.0/uIorB;
 
+float hash13(vec3 p3)
+{
+	p3  = fract(p3 * .1031);
+    p3 += dot(p3, p3.zyx + 31.32);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+vec3 swizzle(vec3 channel, ivec3 rule) {
+    return vec3(
+        channel[rule.x],
+        channel[rule.y],
+        channel[rule.z]
+    );
+}
 
 vec3 getSaturation(vec3 rgb, float adjustment) {
   const vec3 W = vec3(0.2125, 0.7154, 0.0721);
@@ -205,23 +220,21 @@ vec3 getChannel(sampler2D tex, vec2 pos, vec2 offset, float slide) {
     return texture2D(tex, pos + (offset.xy * slide) * uChromaticAberration).rgb * 0.5;
 }
 
-float getCompositeChannel(sampler2D tex, vec2 pos, vec2 offset, float slide, vec3 components) {
+
+
+float getCompositeChannel(sampler2D tex, vec2 pos, vec2 offset, float slide, ivec3 components) {
     vec3 sampled = getChannel(tex, pos, offset, slide);
-    vec3 swizzled;
-    swizzled.r = components.r == 0.0 ? sampled.r : (components.r == 1.0 ? sampled.g : sampled.b);
-    swizzled.g = components.g == 0.0 ? sampled.r : (components.g == 1.0 ? sampled.g : sampled.b);
-    swizzled.b = components.b == 0.0 ? sampled.r : (components.b == 1.0 ? sampled.g : sampled.b);
+    vec3 swizzled = swizzle(sampled, components);
     return (swizzled.r * 4.0 + swizzled.g * 4.0 - swizzled.b * 2.0) / 6.0;
 }
 
-// const int LOOP = 16;
-// #define iorRatioRed 1.0/uIorR;
-// #define iorRatioGreen 1.0/uIorG;
-// #define iorRatioBlue 1.0/uIorB;
-vec3 getInternalDispersion(sampler2D tex, vec3 eye, vec2 uv) {
+
+
+
+vec3 getInternalDispersion(sampler2D tex, vec2 uv, vec3 eye ) {
     vec3 color = vec3(0.0);
     for (int i = 0; i < LOOP; i++) {
-        float slide = float(i) / float(LOOP) * 0.1;
+        float slide = float(i) / float(LOOP) * 0.1 + hash13(vec3(gl_FragCoord.xy,time)) * 0.05;
         vec2 refractRed = refract(eye, vNormal, 1.0/uIorR).xy;
         vec2 refractYellow = refract(eye, vNormal, 1.0/uIorY).xy;
         vec2 refractGreen = refract(eye, vNormal, 1.0/uIorG).xy;
@@ -229,23 +242,45 @@ vec3 getInternalDispersion(sampler2D tex, vec3 eye, vec2 uv) {
         vec2 refractBlue = refract(eye, vNormal, 1.0/uIorB).xy;
         vec2 refractPurple = refract(eye, vNormal, 1.0/uIorP).xy;
 
-        float r = getChannel(tex, uv, refractRed, uRefractPower + slide + 1.0).r;
-        float y = getCompositeChannel(tex, uv, refractYellow, uRefractPower + slide + 2.5, vec3(0.0, 1.0, 2.0));
-        float g = getChannel(tex, uv, refractGreen, uRefractPower + slide + 2.0).g;
-        float c = getCompositeChannel(tex, uv, refractCyan, uRefractPower + slide + 2.5, vec3(1.0, 2.0, 0.0));
-        float b = getChannel(tex, uv, refractBlue, uRefractPower + slide + 3.0).b;
-        float p = getCompositeChannel(tex, uv, refractPurple, uRefractPower + slide + 3.0, vec3(2.0, 0.0, 1.0));
+        float r = getChannel(tex, uv, refractRed, uRefractPower + slide * 1.0).r;
+        float y = getCompositeChannel(tex, uv, refractYellow, uRefractPower + slide * 2.5, ivec3(0, 1, 2));
+        float g = getChannel(tex, uv, refractGreen, uRefractPower + slide * 2.0).g;
+        float c = getCompositeChannel(tex, uv, refractCyan, uRefractPower + slide * 2.5, ivec3(1, 2, 0));
+        float b = getChannel(tex, uv, refractBlue, uRefractPower + slide * 3.0).b;
+        float p = getCompositeChannel(tex, uv, refractPurple, uRefractPower + slide * 3.0, ivec3(2, 0, 1));
 
-        color.r = r;//clamp(r + (2.0*p + 2.0*y - c)/3.0, 0.0, 1.0);
-        color.g = g;//clamp(g + (2.0*y + 2.0*c - p)/3.0, 0.0, 1.0);
-        color.b = b;//clamp(b + (2.0*c + 2.0*p - y)/3.0, 0.0, 1.0);
+        color.r += clamp(r + (2.0*p + 2.0*y - c)/3.0, 0.0, 1.0);
+        color.g += clamp(g + (2.0*y + 2.0*c - p)/3.0, 0.0, 1.0);
+        color.b += clamp(b + (2.0*c + 2.0*p - y)/3.0, 0.0, 1.0);
 
         color.rgb = getSaturation(color.rgb, uSaturation);
     }
-    //color /= float(LOOP);
+    color /= float(LOOP);
     return color;
 }
 
+vec3 getExternalDispersion(sampler2D tex, vec2 uv, vec3 eye, vec3 normal ) {
+    vec3 color = vec3(0.0);
+    vec2 reflected = getSpherical(reflect(eye, -normal));
+    for (int i = 0; i < LOOP; i++) {
+        float slide = float(i) / float(LOOP) * 0.1 + hash13(vec3(gl_FragCoord.xy,time)) * 0.05;
+        
+        float r = getChannel(tex, uv, reflected, uReflectPower + slide * 1.0).r;
+        float y = getCompositeChannel(tex, uv, reflected, uReflectPower + slide * 2.5, ivec3(0, 1, 2));
+        float g = getChannel(tex, uv, reflected, uReflectPower + slide * 2.0).g;
+        float c = getCompositeChannel(tex, uv, reflected, uReflectPower + slide * 2.5, ivec3(1, 2, 0));
+        float b = getChannel(tex, uv, reflected, uReflectPower + slide * 3.0).b;
+        float p = getCompositeChannel(tex, uv, reflected, uReflectPower + slide * 3.0, ivec3(2, 0, 1));
+
+        color.r += clamp(r + (2.0*p + 2.0*y - c)/3.0, 0.0, 1.0);
+        color.g += clamp(g + (2.0*y + 2.0*c - p)/3.0, 0.0, 1.0);
+        color.b += clamp(b + (2.0*c + 2.0*p - y)/3.0, 0.0, 1.0);
+
+        color.rgb = getSaturation(color.rgb, uSaturation);
+    }
+    color /= float(LOOP);
+    return color;
+}
 
 
 
@@ -253,93 +288,24 @@ vec3 getInternalDispersion(sampler2D tex, vec3 eye, vec2 uv) {
 void main() {
   vec2 uv = gl_FragCoord.xy / winResolution.xy;
   vec3 normal = vNormal;
-  vec3 dispersionColor = vec3(0.0);
-  vec3 reflectionColor = vec3(0.0);
-  vec2 reflectionVec = getSpherical(reflect(worldEye, -normal));
-  for ( int i = 0; i < LOOP; i ++ ) {
-    float slide = float(i) / float(LOOP) * 0.1;
-    vec3 refractVecR = refract(worldEye, normal,(1.0/uIorR));
-    vec3 refractVecY = refract(worldEye, normal, (1.0/uIorY));
-    vec3 refractVecG = refract(worldEye, normal, (1.0/uIorG));
-    vec3 refractVecC = refract(worldEye, normal, (1.0/uIorC));
-    vec3 refractVecB = refract(worldEye, normal, (1.0/uIorB));
-    vec3 refractVecP = refract(worldEye, normal, (1.0/uIorP));
-
-    float r = texture2D(uTexture, uv + refractVecR.xy * (uRefractPower + slide * 1.0) * uChromaticAberration).x * 0.5;
-
-    float y = (texture2D(uTexture, uv + refractVecY.xy * (uRefractPower + slide * 1.0) * uChromaticAberration).x * 2.0 +
-                texture2D(uTexture, uv + refractVecY.xy * (uRefractPower + slide * 1.0) * uChromaticAberration).y * 2.0 -
-                texture2D(uTexture, uv + refractVecY.xy * (uRefractPower + slide * 1.0) * uChromaticAberration).z) / 6.0;
-
-    float g = texture2D(uTexture, uv + refractVecG.xy * (uRefractPower + slide * 2.0) * uChromaticAberration).y * 0.5;
-
-    float c = (texture2D(uTexture, uv + refractVecC.xy * (uRefractPower + slide * 2.5) * uChromaticAberration).y * 2.0 +
-                texture2D(uTexture, uv + refractVecC.xy * (uRefractPower + slide * 2.5) * uChromaticAberration).z * 2.0 -
-                texture2D(uTexture, uv + refractVecC.xy * (uRefractPower + slide * 2.5) * uChromaticAberration).x) / 6.0;
-          
-    float b = texture2D(uTexture, uv + refractVecB.xy * (uRefractPower + slide * 3.0) * uChromaticAberration).z * 0.5;
-
-    float p = (texture2D(uTexture, uv + refractVecP.xy * (uRefractPower + slide * 1.0) * uChromaticAberration).z * 2.0 +
-                texture2D(uTexture, uv + refractVecP.xy * (uRefractPower + slide * 1.0) * uChromaticAberration).x * 2.0 -
-                texture2D(uTexture, uv + refractVecP.xy * (uRefractPower + slide * 1.0) * uChromaticAberration).y) / 6.0;
-
-
-    float rR = texture2D(uTexture, uv + reflectionVec.xy * (uReflectPower + slide * 1.0) * uChromaticAberration).x * 0.5;
-
-    float yR = (texture2D(uTexture, uv + reflectionVec.xy * (uReflectPower + slide * 1.0) * uChromaticAberration).x * 2.0 +
-                    texture2D(uTexture, uv + reflectionVec.xy * (uReflectPower + slide * 1.0) * uChromaticAberration).y * 2.0 -
-                    texture2D(uTexture, uv + reflectionVec.xy * (uReflectPower + slide * 1.0) * uChromaticAberration).z) / 6.0;
-
-    float gR = texture2D(uTexture, uv + reflectionVec.xy * (uReflectPower + slide * 2.0) * uChromaticAberration).y * 0.5;
-
-    float cR = (texture2D(uTexture, uv + reflectionVec.xy * (uReflectPower + slide * 2.5) * uChromaticAberration).y * 2.0 +
-                    texture2D(uTexture, uv + reflectionVec.xy * (uReflectPower + slide * 2.5) * uChromaticAberration).z * 2.0 -
-                    texture2D(uTexture, uv + reflectionVec.xy * (uReflectPower + slide * 2.5) * uChromaticAberration).x) / 6.0;
-                
-    float bR = texture2D(uTexture, uv + reflectionVec.xy * (uReflectPower + slide * 3.0) * uChromaticAberration).z * 0.5;
-
-    float pR = (texture2D(uTexture, uv + reflectionVec.xy * (uReflectPower + slide * 1.0) * uChromaticAberration).z * 2.0 +
-                    texture2D(uTexture, uv + reflectionVec.xy * (uReflectPower + slide * 1.0) * uChromaticAberration).x * 2.0 -
-                    texture2D(uTexture, uv + reflectionVec.xy * (uReflectPower + slide * 1.0) * uChromaticAberration).y) / 6.0;
-
-    float Rr = rR + (2.0*pR + 2.0*yR - cR)/3.0;
-    float Gr = gR + (2.0*yR + 2.0*cR - pR)/3.0;
-    float Br = bR + (2.0*cR + 2.0*pR - yR)/3.0;
-
-    float R = r + (2.0*p + 2.0*y - c)/3.0;
-    float G = g + (2.0*y + 2.0*c - p)/3.0;
-    float B = b + (2.0*c + 2.0*p - y)/3.0;
-
-    dispersionColor.r += R;
-    dispersionColor.g += G;
-    dispersionColor.b += B;
-
-    reflectionColor.r += Rr;
-    reflectionColor.g += Gr;
-    reflectionColor.b += Br;
-
-    dispersionColor = getSaturation(dispersionColor, uSaturation);
-    reflectionColor = getSaturation(reflectionColor, uSaturation);
-  }
-
-  // Divide by the number of layers to normalize colors (rgb values can be worth up to the value of LOOP)
-  dispersionColor /= float( LOOP );
-  reflectionColor /= float( LOOP );
-
+  //vec2 reflectionVec = getSpherical(reflect(worldEye, -normal));
+  float f = getFresnel(eye, normal, uFresnelPower);
   vec4 refls = getReflections(eye,normal,uRefractionTexture);
   vec4 refrs = getRefractions(eye,normal,uTexture, 1./1.444);
-  float f = getFresnel(eye, normal, uFresnelPower);
+  
   float specularLight = getSpecular(uLight, uShininess, uDiffuseness);
+  vec3 dispersion = getInternalDispersion(uTexture, uv,  worldEye);
+  vec3 reflections = getExternalDispersion(uTexture, uv,  worldEye, normal);
   
   vec3 color = mix(refrs,refls,f).rgb;
-  color = mix(dispersionColor,reflectionColor,f).rgb;
+  color += mix(dispersion,reflections,f).rgb;
   color += mix(vec3(0.), getSpectrum(specularLight), specularLight);
-  color.rgb += mix(vec3(0.0),getSpectrum(f),f);
-  //color.rgb = SpectrumPoly(f);
+  color += mix(vec3(0.0),getSpectrum(f),f);
+  color = clamp(color, 0.,1.);
+  //color = SpectrumPoly(f);
  
   gl_FragColor = vec4(color, 1.0);
-  //#include <tonemapping_fragment>
-  //#include <colorspace_fragment>
+  
 }
 `;
 
@@ -379,13 +345,40 @@ const material = new THREE.ShaderMaterial({
 const cube = new THREE.Mesh(geometry, material);
 scene.add(cube);
 
-// Handle window resize
+function updateTextTexture() {
+  // Update canvas dimensions
+  textCanvas.width = window.innerWidth * dpr;
+  textCanvas.height = window.innerHeight * dpr;
+
+  // Reset scale and set it again (needed because canvas clear resets transform)
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.scale(dpr, dpr);
+
+  // Fill black background
+  ctx.fillStyle = "black";
+  ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
+
+  // Add white text
+  ctx.fillStyle = "white";
+  ctx.font = "120px Inter";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("Hello World", window.innerWidth / 2, window.innerHeight / 2);
+
+  // Update texture
+  texture.needsUpdate = true;
+}
+
+// Initial call
+updateTextTexture();
+
+// Update resize handler
 window.addEventListener("resize", () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  updateTextTexture();
 });
-renderer.setSize(window.innerWidth, window.innerHeight);
 
 // Animation loop
 function animate() {
