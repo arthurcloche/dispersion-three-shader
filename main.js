@@ -374,7 +374,7 @@ void main() {
     uDiffuseness: { value: 0.2 },
     uSlide: { value: 0.1 },
     uChromaticSalt: { value: 0.05 },
-    uNacre: { value: 0.05 },
+    uNacre: { value: 0.0 },
     uLight: { value: new THREE.Vector3(-1, 0, 1) },
     uLightStrength: { value: 1 },
     winResolution: {
