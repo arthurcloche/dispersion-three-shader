@@ -42,7 +42,7 @@ import GUI from "lil-gui";
   // renderScene.background = texture;
   const textureLoader = new RGBELoader();
   textureLoader.load(
-    "https://cdn.shopify.com/s/files/1/0817/9308/9592/files/overcast_soil_puresky_1k.hdr?v=1727295592",
+    "https://cdn.shopify.com/s/files/1/0817/9308/9592/files/studio-blur.jpg?v=1720074765",
     function (texture) {
       texture.mapping = THREE.EquirectangularReflectionMapping;
       texture.flipY = true;
@@ -62,18 +62,17 @@ import GUI from "lil-gui";
   varying vec3 worldEye;
   varying vec2 vUv;
   varying float facing;
+  varying mat3 nMatrix;
   void main() {
-    // Get face normal direction using the sign of the determinant of the model matrix
+    
     facing = sign(determinant(modelMatrix));
-    
-    // Flip normal if back facing
     vNormal = normalize(normalMatrix * (normal));
-    
+    nMatrix = normalMatrix;
     vPosition = position;
     vec4 worldPos = modelMatrix * vec4(position, 1.0);
     vec4 mvPosition = viewMatrix * worldPos;
     eye = vec3(0.0, 0.0, -1.0); 
-    worldEye = normalize(cameraPosition - mvPosition.xyz);
+    worldEye = normalize( cameraPosition - mvPosition.xyz);
     vUv = uv;
     gl_Position = projectionMatrix * mvPosition;
   }
@@ -108,9 +107,9 @@ uniform bool uFlipNormal;
 varying vec3 vNormal;
 varying vec3 eye;
 varying vec3 worldEye;
-varying vec2 vUv;
+varying mat3 nMatrix;
 varying float facing;
-
+varying vec2 vUv;
 #define PI ${Math.PI}
 #define time uTime
 const int LOOP = 8;
@@ -144,7 +143,16 @@ float getFresnel(vec3 eye, vec3 vNormal, float power) {
   
   return pow(inversefresnelFactor, power);
 }
-
+/*
+float getFresnel(vec3 direction, vec3 normal, float power) {
+    bool invert = true;
+    vec3 halfDirection = normalize( normal + direction );
+    float cosine = dot( halfDirection, direction );
+    float product = max( cosine, 0.0 );
+    float factor = invert ? 1.0 - pow( product, power ) : pow( product, power );
+    return factor;
+}
+*/
 vec2 getSpherical(vec3 normal) {
   float phi = acos(normal.y);
   float sinPhi = sin(phi);
@@ -333,17 +341,15 @@ vec3 getScreenExternalDispersion(sampler2D tex, vec2 uv, vec3 worldEye, vec3 nor
 void main() {
   vec2 uv = gl_FragCoord.xy / winResolution.xy;
   vec3 normal = uFlipNormal ? -vNormal : vNormal;
-  //vec2 reflectionVec = getSpherical(reflect(worldEye, -normal));
-  float f = getFresnel(eye, normal, uFresnelPower);
-  vec2 spherical = getSpherical(normal);
-  vec4 refls = getReflections(eye,normal,uRefractionTexture);
-  float specularLight = getSpecular(uLight, uShininess, uDiffuseness);
+  float f = getFresnel(worldEye, normal , uFresnelPower);
+  vec4 refls = getRefractions(worldEye,normal + SALT *.1,uTexture, 1./1.5);
+  float specularLight = getSpecular(uLight * nMatrix, uShininess, uDiffuseness);
   vec3 dispersion = getInternalDispersion(uTexture, normal,  worldEye);
   vec3 reflections = getExternalDispersion(uTexture, normal, worldEye);
   vec3 color = uFlipNormal ? vec3(0.) : dispersion * .25;
   color += dispersion + reflections * specularLight + refls.rgb * pow(f * uReflectPower,2.);
   color += mix(vec3(0.), getSpectrum(specularLight), specularLight * uLightStrength);
-  color += mix(vec3(0.0),getSpectrum(f),((0.5 * f) + .5) * uNacre );
+  color += mix(vec3(0.0),getSpectrum(f),(1.-f) * uNacre );
   color = clamp(color, 0.,1.);
   
   gl_FragColor = vec4(color, 1.0);
@@ -353,16 +359,16 @@ void main() {
 `;
 
   const uniforms = {
-    uIorR: { value: 1.0 },
-    uIorY: { value: 1.0 },
-    uIorG: { value: 1.0 },
-    uIorC: { value: 1.0 },
-    uIorB: { value: 1.0 },
-    uIorP: { value: 1.0 },
+    uIorR: { value: 1.5 },
+    uIorY: { value: 1.5 },
+    uIorG: { value: 1.5 },
+    uIorC: { value: 1.5 },
+    uIorB: { value: 1.5 },
+    uIorP: { value: 1.5 },
     uSaturation: { value: 1.0 },
     uChromaticAberration: { value: 0.5 },
     uRefractPower: { value: 1.0 },
-    uReflectPower: { value: 1.0 },
+    uReflectPower: { value: 0.5 },
     uFresnelPower: { value: 4.0 },
     uShininess: { value: 40.0 },
     uDiffuseness: { value: 0.2 },
@@ -394,7 +400,7 @@ void main() {
 
   const geometries = {
     Torus: new THREE.TorusGeometry(1, 0.5, 100, 100),
-    Cube: new THREE.BoxGeometry(2, 2, 2),
+    Cube: new THREE.BoxGeometry(2, 2, 2, 10, 10, 10),
     Sphere: new THREE.SphereGeometry(1.5, 64, 64),
     Cylinder: new THREE.CylinderGeometry(1, 1, 2, 32),
     Dodecahedron: new THREE.DodecahedronGeometry(1.5),
@@ -461,9 +467,9 @@ void main() {
           vec2 uv = gl_FragCoord.xy / uResolution;
           vec4 frontColor = texture2D(uFrontTexture, uv);
           vec4 backColor = texture2D(uBackTexture, uv);
-          
+          float factor = 0.05;
           // Blend front and back
-          vec4 color =  blend(backColor, frontColor, 0.98);
+          vec4 color =  screen(backColor * factor, frontColor * (1. + ( 1. -factor)),true);
           gl_FragColor = color;
         }
       `,
@@ -530,7 +536,7 @@ void main() {
     requestAnimationFrame(animate);
     mesh.rotation.x += 0.01;
     mesh.rotation.y += 0.01;
-    material.uniforms.uTime.value += 0.01;
+    material.uniforms.uTime.value += 0.001;
     controls.update();
 
     material.uniforms.uFlipNormal.value = true;
@@ -540,7 +546,7 @@ void main() {
     renderer.render(bufferScene, camera);
 
     material.uniforms.uFlipNormal.value = false;
-    material.uniforms.uTexture.value = backTarget.texture;
+    material.uniforms.uTexture.value = texture;
     material.side = THREE.FrontSide;
 
     renderer.setRenderTarget(frontTarget);
@@ -548,23 +554,14 @@ void main() {
 
     renderMesh.material.uniforms.uFrontTexture.value = frontTarget.texture;
     renderMesh.material.uniforms.uBackTexture.value = backTarget.texture;
+
     renderer.setRenderTarget(null);
     renderer.render(scene, renderCamera);
   }
 
-  const gui = new GUI({ closeFolders: true });
+  const gui = new GUI({ closeFolders: false });
   // refractoive
-  const iorFolder = gui.addFolder("Refractive Indices");
-  iorFolder.add(material.uniforms.uIorR, "value", 1.0, 2.0, 0.01).name("Red");
-  iorFolder
-    .add(material.uniforms.uIorY, "value", 1.0, 2.0, 0.01)
-    .name("Yellow");
-  iorFolder.add(material.uniforms.uIorG, "value", 1.0, 2.0, 0.01).name("Green");
-  iorFolder.add(material.uniforms.uIorC, "value", 1.0, 2.0, 0.01).name("Cyan");
-  iorFolder.add(material.uniforms.uIorB, "value", 1.0, 2.0, 0.01).name("Blue");
-  iorFolder
-    .add(material.uniforms.uIorP, "value", 1.0, 2.0, 0.01)
-    .name("Purple");
+
   // effect
   const effectsFolder = gui.addFolder("Effects");
   effectsFolder
@@ -583,12 +580,23 @@ void main() {
     .add(material.uniforms.uRefractPower, "value", 0, 2, 0.01)
     .name("Refraction Strength");
   effectsFolder
-    .add(material.uniforms.uReflectPower, "value", 0, 0.5, 0.01)
+    .add(material.uniforms.uReflectPower, "value", 0, 1, 0.01)
     .name("Reflection Strength");
   effectsFolder
-    .add(material.uniforms.uFresnelPower, "value", 0, 10, 0.01)
+    .add(material.uniforms.uFresnelPower, "value", 1, 10, 0.01)
     .name("Fresnel Power");
 
+  const iorFolder = gui.addFolder("Refractive Indices");
+  iorFolder.add(material.uniforms.uIorR, "value", 1.0, 2.0, 0.01).name("Red");
+  iorFolder
+    .add(material.uniforms.uIorY, "value", 1.0, 2.0, 0.01)
+    .name("Yellow");
+  iorFolder.add(material.uniforms.uIorG, "value", 1.0, 2.0, 0.01).name("Green");
+  iorFolder.add(material.uniforms.uIorC, "value", 1.0, 2.0, 0.01).name("Cyan");
+  iorFolder.add(material.uniforms.uIorB, "value", 1.0, 2.0, 0.01).name("Blue");
+  iorFolder
+    .add(material.uniforms.uIorP, "value", 1.0, 2.0, 0.01)
+    .name("Purple");
   // Lighting
   const lightFolder = gui.addFolder("Lighting");
   lightFolder
