@@ -2,66 +2,59 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls";
 import { RGBELoader } from "three/examples/jsm/loaders/RGBELoader";
 import GUI from "lil-gui";
-const canvas = document.getElementById("canvas");
+(async () => {
+  const canvas = document.getElementById("canvas");
+  const renderer = new THREE.WebGLRenderer({ canvas });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setClearColor(0x000000, 0);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1;
+  renderer.alpha = true;
 
-const renderer = new THREE.WebGLRenderer({ canvas });
-renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setClearColor(0x000000, 0);
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-renderer.outputColorSpace = THREE.SRGBColorSpace;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1;
-renderer.alpha = true;
+  const scene = new THREE.Scene();
+  const bufferScene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(
+    75,
+    window.innerWidth / window.innerHeight,
+    0.1,
+    1000
+  );
+  camera.position.z = 4;
+  const renderCamera = new THREE.PerspectiveCamera(
+    75,
+    window.innerWidth / window.innerHeight,
+    0.1,
+    1000
+  );
+  renderCamera.position.z = 1;
+  // Create a canvas for text texture
+  const textCanvas = document.createElement("canvas");
+  const ctx = textCanvas.getContext("2d", { antialias: true });
+  const dpr = Math.min(window.devicePixelRatio, 2); // Cap at 2 to match shader behavior
+  textCanvas.width = window.innerWidth * dpr;
+  textCanvas.height = window.innerHeight * dpr;
 
-const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(
-  75,
-  window.innerWidth / window.innerHeight,
-  0.1,
-  1000
-);
-camera.position.z = 4;
+  // Convert to texture
+  const texture = new THREE.CanvasTexture(textCanvas);
+  scene.background = texture;
+  // renderScene.background = texture;
+  const textureLoader = new RGBELoader();
+  textureLoader.load(
+    "https://cdn.shopify.com/s/files/1/0817/9308/9592/files/overcast_soil_puresky_1k.hdr?v=1727295592",
+    function (texture) {
+      texture.mapping = THREE.EquirectangularReflectionMapping;
+      texture.flipY = true;
+      // scene.environment = texture;
+      material.uniforms.uRefractionTexture.value = texture;
+    }
+  );
 
-// Create a canvas for text texture
-const textCanvas = document.createElement("canvas");
-const ctx = textCanvas.getContext("2d", { antialias: true });
-const dpr = Math.min(window.devicePixelRatio, 2); // Cap at 2 to match shader behavior
-textCanvas.width = window.innerWidth * dpr;
-textCanvas.height = window.innerHeight * dpr;
+  const controls = new OrbitControls(camera, canvas);
+  // Add this after creating the geometry but before creating the mesh
 
-// Scale canvas context by DPR
-ctx.scale(dpr, dpr);
-
-// Fill black background
-ctx.fillStyle = "black";
-ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
-
-// Add white text
-ctx.fillStyle = "white";
-ctx.font = "120px Inter";
-ctx.textAlign = "center";
-ctx.textBaseline = "middle";
-ctx.fillText("Hello World", window.innerWidth / 2, window.innerHeight / 2);
-
-// Convert to texture
-const texture = new THREE.CanvasTexture(textCanvas);
-console.log(texture);
-scene.background = texture;
-const textureLoader = new RGBELoader();
-textureLoader.load(
-  "https://cdn.shopify.com/s/files/1/0817/9308/9592/files/overcast_soil_puresky_1k.hdr?v=1727295592",
-  function (texture) {
-    texture.mapping = THREE.EquirectangularReflectionMapping;
-    texture.flipY = true;
-    // scene.environment = texture;
-    material.uniforms.uRefractionTexture.value = texture;
-  }
-);
-
-const controls = new OrbitControls(camera, canvas);
-// Add this after creating the geometry but before creating the mesh
-
-const vertexShader = `
+  const vertexShader = `
   varying vec3 vNormal;
   varying vec3 vPosition;
   varying vec3 vViewPosition;
@@ -86,7 +79,7 @@ const vertexShader = `
   }
 `;
 
-const fragmentShader = `
+  const fragmentShader = `
 uniform float uIorR;
 uniform float uIorY;
 uniform float uIorG;
@@ -109,7 +102,9 @@ uniform vec3 uLight;
 uniform float uTime;
 uniform vec2 winResolution;
 uniform sampler2D uTexture;
+uniform sampler2D uFixedTexture;
 uniform sampler2D uRefractionTexture;
+uniform bool uFlipNormal;
 varying vec3 vNormal;
 varying vec3 eye;
 varying vec3 worldEye;
@@ -118,7 +113,7 @@ varying float facing;
 
 #define PI ${Math.PI}
 #define time uTime
-const int LOOP = 16;
+const int LOOP = 8;
 
 #define SALT hash13(vec3(gl_FragCoord.xy,time)) * uChromaticSalt
 
@@ -337,7 +332,7 @@ vec3 getScreenExternalDispersion(sampler2D tex, vec2 uv, vec3 worldEye, vec3 nor
 
 void main() {
   vec2 uv = gl_FragCoord.xy / winResolution.xy;
-  vec3 normal = vNormal;
+  vec3 normal = uFlipNormal ? -vNormal : vNormal;
   //vec2 reflectionVec = getSpherical(reflect(worldEye, -normal));
   float f = getFresnel(eye, normal, uFresnelPower);
   vec2 spherical = getSpherical(normal);
@@ -345,182 +340,289 @@ void main() {
   float specularLight = getSpecular(uLight, uShininess, uDiffuseness);
   vec3 dispersion = getInternalDispersion(uTexture, normal,  worldEye);
   vec3 reflections = getExternalDispersion(uTexture, normal, worldEye);
-  
-  vec3 color = dispersion + reflections * specularLight + refls.rgb * pow(f * uReflectPower,2.);
+  vec3 color = uFlipNormal ? vec3(0.) : dispersion * .25;
+  color += dispersion + reflections * specularLight + refls.rgb * pow(f * uReflectPower,2.);
   color += mix(vec3(0.), getSpectrum(specularLight), specularLight * uLightStrength);
   color += mix(vec3(0.0),getSpectrum(f),((0.5 * f) + .5) * uNacre );
   color = clamp(color, 0.,1.);
   
-  // color = mix(vec3(1,0,0), vec3(0,0,1), abs(facing));
-
   gl_FragColor = vec4(color, 1.0);
    #include <tonemapping_fragment>
   //  #include <colorspace_fragment>
 }
 `;
 
-const uniforms = {
-  uIorR: { value: 1.0 },
-  uIorY: { value: 1.0 },
-  uIorG: { value: 1.0 },
-  uIorC: { value: 1.0 },
-  uIorB: { value: 1.0 },
-  uIorP: { value: 1.0 },
-  uSaturation: { value: 1.0 },
-  uChromaticAberration: { value: 0.5 },
-  uRefractPower: { value: 1.0 },
-  uReflectPower: { value: 1.0 },
-  uFresnelPower: { value: 4.0 },
-  uShininess: { value: 40.0 },
-  uDiffuseness: { value: 0.2 },
-  uSlide: { value: 0.1 },
-  uChromaticSalt: { value: 0.05 },
-  uNacre: { value: 0.05 },
-  uLight: { value: new THREE.Vector3(-1, 0, 1) },
-  uLightStrength: { value: 1 },
-  winResolution: {
-    value: new THREE.Vector2(
-      window.innerWidth,
-      window.innerHeight
-    ).multiplyScalar(dpr), // if DPR is 3 the shader glitches 🤷‍♂️
-  },
-  uTexture: { value: texture },
-  uRefractionTexture: { value: null },
-  uTime: { value: 0.0 },
-};
+  const uniforms = {
+    uIorR: { value: 1.0 },
+    uIorY: { value: 1.0 },
+    uIorG: { value: 1.0 },
+    uIorC: { value: 1.0 },
+    uIorB: { value: 1.0 },
+    uIorP: { value: 1.0 },
+    uSaturation: { value: 1.0 },
+    uChromaticAberration: { value: 0.5 },
+    uRefractPower: { value: 1.0 },
+    uReflectPower: { value: 1.0 },
+    uFresnelPower: { value: 4.0 },
+    uShininess: { value: 40.0 },
+    uDiffuseness: { value: 0.2 },
+    uSlide: { value: 0.1 },
+    uChromaticSalt: { value: 0.05 },
+    uNacre: { value: 0.05 },
+    uLight: { value: new THREE.Vector3(-1, 0, 1) },
+    uLightStrength: { value: 1 },
+    winResolution: {
+      value: new THREE.Vector2(
+        window.innerWidth,
+        window.innerHeight
+      ).multiplyScalar(dpr), // if DPR is 3 the shader glitches 🤷‍♂️
+    },
+    uTexture: { value: texture },
+    uFixedTexture: { value: texture },
+    uBackTexture: { value: null },
+    uRefractionTexture: { value: null },
+    uTime: { value: 0.0 },
+    uFlipNormal: { value: true },
+  };
 
-const material = new THREE.ShaderMaterial({
-  vertexShader: vertexShader,
-  fragmentShader: fragmentShader,
-  uniforms,
-  side: THREE.FrontSide,
-});
-
-const geometries = {
-  Torus: new THREE.TorusGeometry(1, 0.5, 100, 100),
-  Cube: new THREE.BoxGeometry(2, 2, 2),
-  Sphere: new THREE.SphereGeometry(1.5, 64, 64),
-  Cylinder: new THREE.CylinderGeometry(1, 1, 2, 32),
-  Dodecahedron: new THREE.DodecahedronGeometry(1.5),
-};
-
-// Replace the cube creation with this:
-const mesh = new THREE.Mesh(geometries["Torus"], material);
-scene.add(mesh);
-
-function updateTextTexture() {
-  // Update canvas dimensions
-
-  textCanvas.width = window.innerWidth * dpr;
-  textCanvas.height = window.innerHeight * dpr;
-
-  // Reset scale and set it again (needed because canvas clear resets transform)
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.scale(dpr, dpr);
-
-  // Fill black background
-  ctx.fillStyle = "#000000";
-  ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
-
-  // Add white text
-  ctx.fillStyle = "white";
-  ctx.font = "120px Inter";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText("Hello World", window.innerWidth / 2, window.innerHeight / 2);
-
-  // Update texture
-  texture.needsUpdate = true;
-}
-
-// Initial call
-updateTextTexture();
-
-// Update resize handler
-window.addEventListener("resize", () => {
-  camera.aspect = window.innerWidth / window.innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  updateTextTexture();
-});
-
-// Animation loop
-function animate() {
-  requestAnimationFrame(animate);
-
-  mesh.rotation.x += 0.01;
-  mesh.rotation.y += 0.01;
-  material.uniforms.uTime.value += 0.01;
-  controls.update();
-  renderer.render(scene, camera);
-}
-
-const gui = new GUI();
-// refractoive
-const iorFolder = gui.addFolder("Refractive Indices");
-iorFolder.add(material.uniforms.uIorR, "value", 1.0, 2.0, 0.01).name("Red");
-iorFolder.add(material.uniforms.uIorY, "value", 1.0, 2.0, 0.01).name("Yellow");
-iorFolder.add(material.uniforms.uIorG, "value", 1.0, 2.0, 0.01).name("Green");
-iorFolder.add(material.uniforms.uIorC, "value", 1.0, 2.0, 0.01).name("Cyan");
-iorFolder.add(material.uniforms.uIorB, "value", 1.0, 2.0, 0.01).name("Blue");
-iorFolder.add(material.uniforms.uIorP, "value", 1.0, 2.0, 0.01).name("Purple");
-// effect
-const effectsFolder = gui.addFolder("Effects");
-effectsFolder
-  .add(material.uniforms.uSaturation, "value", 0, 2, 0.1)
-  .name("Saturation");
-effectsFolder
-  .add(material.uniforms.uChromaticAberration, "value", 0, 2, 0.1)
-  .name("Chromatic Aberration");
-effectsFolder
-  .add(material.uniforms.uSlide, "value", -1, 1, 0.01)
-  .name("Chromatic Slide");
-effectsFolder
-  .add(material.uniforms.uChromaticSalt, "value", 0, 0.25, 0.01)
-  .name("Chromatic Salt");
-effectsFolder
-  .add(material.uniforms.uRefractPower, "value", 0, 2, 0.01)
-  .name("Refraction Strength");
-effectsFolder
-  .add(material.uniforms.uReflectPower, "value", 0, 0.5, 0.01)
-  .name("Reflection Strength");
-effectsFolder
-  .add(material.uniforms.uFresnelPower, "value", 0, 10, 0.01)
-  .name("Fresnel Power");
-
-// Lighting
-const lightFolder = gui.addFolder("Lighting");
-lightFolder
-  .add(material.uniforms.uLightStrength, "value", 0, 1, 0.01)
-  .name("Strength");
-lightFolder
-  .add(material.uniforms.uShininess, "value", 0, 100, 1)
-  .name("Shininess");
-lightFolder
-  .add(material.uniforms.uDiffuseness, "value", 0, 1, 0.1)
-  .name("Diffuseness");
-lightFolder.add(material.uniforms.uNacre, "value", 0, 1, 0.01).name("Nacre");
-lightFolder
-  .add(material.uniforms.uLight.value, "x", -5, 5, 0.1)
-  .name("Light X");
-lightFolder
-  .add(material.uniforms.uLight.value, "y", -5, 5, 0.1)
-  .name("Light Y");
-lightFolder
-  .add(material.uniforms.uLight.value, "z", -5, 5, 0.1)
-  .name("Light Z");
-
-// Add this new folder:
-const meshFolder = gui.addFolder("Mesh");
-const meshSettings = {
-  geometry: "Torus",
-};
-
-meshFolder
-  .add(meshSettings, "geometry", Object.keys(geometries))
-  .onChange((value) => {
-    mesh.geometry.dispose(); // Clean up old geometry
-    mesh.geometry = geometries[value];
+  const material = new THREE.ShaderMaterial({
+    vertexShader: vertexShader,
+    fragmentShader: fragmentShader,
+    uniforms,
+    side: THREE.FrontSide,
   });
 
-animate();
+  const geometries = {
+    Torus: new THREE.TorusGeometry(1, 0.5, 100, 100),
+    Cube: new THREE.BoxGeometry(2, 2, 2),
+    Sphere: new THREE.SphereGeometry(1.5, 64, 64),
+    Cylinder: new THREE.CylinderGeometry(1, 1, 2, 32),
+    Dodecahedron: new THREE.DodecahedronGeometry(1.5),
+  };
+
+  const backTarget = new THREE.WebGLRenderTarget(
+    window.innerWidth * dpr,
+    window.innerHeight * dpr,
+    {
+      format: THREE.RGBAFormat,
+      type: THREE.FloatType,
+    }
+  );
+
+  const frontTarget = new THREE.WebGLRenderTarget(
+    window.innerWidth * dpr,
+    window.innerHeight * dpr,
+    {
+      format: THREE.RGBAFormat,
+      type: THREE.FloatType,
+    }
+  );
+  const renderMesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(2, 2),
+    new THREE.ShaderMaterial({
+      uniforms: {
+        uFrontTexture: { value: frontTarget.texture },
+        uBackTexture: { value: backTarget.texture },
+        uResolution: {
+          value: new THREE.Vector2(
+            window.innerWidth * dpr,
+            window.innerHeight * dpr
+          ),
+        },
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform sampler2D uFrontTexture;
+        uniform sampler2D uBackTexture; 
+        uniform vec2 uResolution;
+        varying vec2 vUv;
+        
+        vec4 add(vec4 src, vec4 dst, bool clamped) {
+          if(!clamped) return src + dst;
+          return clamp(src + dst, 0.0, 1.0);
+        }
+
+        vec4 blend(vec4 src, vec4 dst, float f) {
+          return mix(src, dst, f);
+        }
+
+        vec4 screen(vec4 src, vec4 dst, bool clamped) {
+          if(!clamped) return vec4(1.0) - (vec4(1.0) - src) * (vec4(1.0) - dst);
+          return clamp(vec4(1.0) - (vec4(1.0) - src) * (vec4(1.0) - dst), 0.0, 1.0);
+}
+
+        void main() {
+          vec2 uv = gl_FragCoord.xy / uResolution;
+          vec4 frontColor = texture2D(uFrontTexture, uv);
+          vec4 backColor = texture2D(uBackTexture, uv);
+          
+          // Blend front and back
+          vec4 color =  blend(backColor, frontColor, 0.98);
+          gl_FragColor = color;
+        }
+      `,
+      transparent: true,
+      depthWrite: false,
+      depthTest: false,
+    })
+  );
+
+  scene.add(renderMesh);
+
+  // Replace the cube creation with this:
+  const mesh = new THREE.Mesh(geometries["Torus"], material);
+  bufferScene.add(mesh);
+
+  function updateTextTexture() {
+    // Update canvas dimensions
+
+    textCanvas.width = window.innerWidth * dpr;
+    textCanvas.height = window.innerHeight * dpr;
+
+    // Reset scale and set it again (needed because canvas clear resets transform)
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.scale(dpr, dpr);
+
+    // Fill black background
+    ctx.fillStyle = "#000000";
+    ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
+
+    // Add white text
+    ctx.fillStyle = "white";
+    ctx.font = "160px Inter";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("Hello World", window.innerWidth / 2, window.innerHeight / 2);
+
+    // Update texture
+    texture.needsUpdate = true;
+  }
+
+  // Initial call
+  updateTextTexture();
+  // Update resize handler
+  window.addEventListener("resize", () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderCamera.aspect = window.innerWidth / window.innerHeight;
+    renderCamera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    backTarget.setSize(window.innerWidth, window.innerHeight);
+    frontTarget.setSize(window.innerWidth, window.innerHeight);
+
+    updateTextTexture();
+
+    // Update resolution uniform
+    renderMesh.material.uniforms.uResolution.value.set(
+      window.innerWidth * dpr,
+      window.innerHeight * dpr
+    );
+  });
+
+  // Animation loop
+  function animate() {
+    requestAnimationFrame(animate);
+    mesh.rotation.x += 0.01;
+    mesh.rotation.y += 0.01;
+    material.uniforms.uTime.value += 0.01;
+    controls.update();
+
+    material.uniforms.uFlipNormal.value = true;
+    material.uniforms.uTexture.value = texture;
+    material.side = THREE.BackSide;
+    renderer.setRenderTarget(backTarget);
+    renderer.render(bufferScene, camera);
+
+    material.uniforms.uFlipNormal.value = false;
+    material.uniforms.uTexture.value = backTarget.texture;
+    material.side = THREE.FrontSide;
+
+    renderer.setRenderTarget(frontTarget);
+    renderer.render(bufferScene, camera);
+
+    renderMesh.material.uniforms.uFrontTexture.value = frontTarget.texture;
+    renderMesh.material.uniforms.uBackTexture.value = backTarget.texture;
+    renderer.setRenderTarget(null);
+    renderer.render(scene, renderCamera);
+  }
+
+  const gui = new GUI({ closeFolders: true });
+  // refractoive
+  const iorFolder = gui.addFolder("Refractive Indices");
+  iorFolder.add(material.uniforms.uIorR, "value", 1.0, 2.0, 0.01).name("Red");
+  iorFolder
+    .add(material.uniforms.uIorY, "value", 1.0, 2.0, 0.01)
+    .name("Yellow");
+  iorFolder.add(material.uniforms.uIorG, "value", 1.0, 2.0, 0.01).name("Green");
+  iorFolder.add(material.uniforms.uIorC, "value", 1.0, 2.0, 0.01).name("Cyan");
+  iorFolder.add(material.uniforms.uIorB, "value", 1.0, 2.0, 0.01).name("Blue");
+  iorFolder
+    .add(material.uniforms.uIorP, "value", 1.0, 2.0, 0.01)
+    .name("Purple");
+  // effect
+  const effectsFolder = gui.addFolder("Effects");
+  effectsFolder
+    .add(material.uniforms.uSaturation, "value", 0, 2, 0.1)
+    .name("Saturation");
+  effectsFolder
+    .add(material.uniforms.uChromaticAberration, "value", 0, 2, 0.1)
+    .name("Chromatic Aberration");
+  effectsFolder
+    .add(material.uniforms.uSlide, "value", -1, 1, 0.01)
+    .name("Chromatic Slide");
+  effectsFolder
+    .add(material.uniforms.uChromaticSalt, "value", 0, 0.25, 0.01)
+    .name("Chromatic Salt");
+  effectsFolder
+    .add(material.uniforms.uRefractPower, "value", 0, 2, 0.01)
+    .name("Refraction Strength");
+  effectsFolder
+    .add(material.uniforms.uReflectPower, "value", 0, 0.5, 0.01)
+    .name("Reflection Strength");
+  effectsFolder
+    .add(material.uniforms.uFresnelPower, "value", 0, 10, 0.01)
+    .name("Fresnel Power");
+
+  // Lighting
+  const lightFolder = gui.addFolder("Lighting");
+  lightFolder
+    .add(material.uniforms.uLightStrength, "value", 0, 1, 0.01)
+    .name("Strength");
+  lightFolder
+    .add(material.uniforms.uShininess, "value", 0, 100, 1)
+    .name("Shininess");
+  lightFolder
+    .add(material.uniforms.uDiffuseness, "value", 0, 1, 0.1)
+    .name("Diffuseness");
+  lightFolder.add(material.uniforms.uNacre, "value", 0, 1, 0.01).name("Nacre");
+  lightFolder
+    .add(material.uniforms.uLight.value, "x", -5, 5, 0.1)
+    .name("Light X");
+  lightFolder
+    .add(material.uniforms.uLight.value, "y", -5, 5, 0.1)
+    .name("Light Y");
+  lightFolder
+    .add(material.uniforms.uLight.value, "z", -5, 5, 0.1)
+    .name("Light Z");
+
+  // Add this new folder:
+  const meshFolder = gui.addFolder("Mesh");
+  const meshSettings = {
+    geometry: "Torus",
+  };
+
+  meshFolder
+    .add(meshSettings, "geometry", Object.keys(geometries))
+    .onChange((value) => {
+      mesh.geometry.dispose(); // Clean up old geometry
+      mesh.geometry = geometries[value];
+    });
+
+  animate();
+})();
