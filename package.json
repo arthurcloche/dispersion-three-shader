@@ -12,7 +12,10 @@
     "vite": "^6.0.1"
   },
   "dependencies": {
+    "gsap": "^3.12.7",
     "lil-gui": "^0.20.0",
-    "three": "^0.171.0"
+    "simplex-noise": "^4.0.3",
+    "three": "^0.171.0",
+    "threejs-components": "^0.0.17"
   }
 }
