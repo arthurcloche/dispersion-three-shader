@@ -2,6 +2,10 @@ import * as THREE from "three";
 import { gsap } from "gsap";
 import { createNoise3D } from "simplex-noise";
 
+// https://colinbarrebrisebois.com/2011/03/07/gdc-2011-approximating-translucency-for-a-fast-cheap-and-convincing-subsurface-scattering-look/
+// https://www.alanzucconi.com/2017/08/30/fast-subsurface-scattering-2/
+// https://xavierchermain.github.io/publications/aniso-ibl
+
 const canvas = document.getElementById("canvas");
 let width = canvas.offsetWidth,
   height = canvas.offsetHeight;
@@ -149,6 +153,7 @@ const vertexShader = `
   varying vec3 worldNormal;
   varying vec2 vUv;
   varying mat3 nMatrix;
+  varying vec3 pos;
 
   void main() {
     vNormal = normalize(normalMatrix * normal);
@@ -178,9 +183,11 @@ varying vec3 vReflect;
 varying vec3 vRefract[3];
 varying float vReflectionFactor;
 varying vec3 vPosition;
+varying vec3 pos;
 varying vec3 vNormal;
 varying vec3 worldNormal;
 varying vec3 worldEye;
+
 
 float getFresnel(vec3 eye, vec3 vNormal, float power) {
   float fresnelFactor = abs(dot(eye, vNormal));
@@ -215,56 +222,23 @@ float hash13(vec3 p3)
     return fract((p3.x + p3.y) * p3.z);
 }   
 
-vec3 getInternalDispersion(samplerCube cubemap, vec3 normals, vec3 eye) {
-    vec3 color = vec3(0.0);
-    float dispersionStrength = 0.;
-    
-    for (int i = 0; i < LOOP; i++) {
-        float slide = float(i) / float(LOOP) * uSlide;
-        vec3 refractRed = refract(eye, normals, uIorR);
-        vec3 refractGreen = refract(eye, normals, uIorR + uChromaticAberration * slide * 2.);
-        vec3 refractBlue = refract(eye, normals, uIorR + uChromaticAberration * slide * 3.);
-        /*
-        vec3 refractRed = refract(eye, normals, uIorR);
-        vec3 refractYellow = refract(eye, normals, uIorY);
-        vec3 refractGreen = refract(eye, normals, uIorG);
-        vec3 refractCyan = refract(eye, normals, uIorC);
-        vec3 refractBlue = refract(eye, normals, uIorB);
-        vec3 refractPurple = refract(eye, normals, uIorP);
-        
-        vec3 dirRed = mix(refractRed, refractRed * (1.0 + slide * dispersionStrength), dispersionStrength);
-        vec3 dirYellow = mix(refractYellow, refractYellow * (1.0 + slide * dispersionStrength * 1.5), dispersionStrength);
-        vec3 dirGreen = mix(refractGreen, refractGreen * (1.0 + slide * dispersionStrength * 1.2), dispersionStrength);
-        vec3 dirCyan = mix(refractCyan, refractCyan * (1.0 + slide * dispersionStrength * 1.3), dispersionStrength);
-        vec3 dirBlue = mix(refractBlue, refractBlue * (1.0 + slide * dispersionStrength * 1.7), dispersionStrength);
-        vec3 dirPurple = mix(refractPurple, refractPurple * (1.0 + slide * dispersionStrength * 1.8), dispersionStrength);
-        
-        float r = textureCube(cubemap, dirRed).r;
-        float y = (textureCube(cubemap, dirYellow).r * 0.4 + textureCube(cubemap, dirYellow).g * 0.6);
-        float g = textureCube(cubemap, dirGreen).g;
-        float c = (textureCube(cubemap, dirCyan).g * 0.4 + textureCube(cubemap, dirCyan).b * 0.6);
-        float b = textureCube(cubemap, dirBlue).b;
-        float p = (textureCube(cubemap, dirPurple).b * 0.4 + textureCube(cubemap, dirPurple).r * 0.6);
-        
-        color.r += clamp(r + (2.0*p + 2.0*y - c)/3.0, 0.0, 1.0);
-        color.g += clamp(g + (2.0*y + 2.0*c - p)/3.0, 0.0, 1.0);
-        color.b += clamp(b + (2.0*c + 2.0*p - y)/3.0, 0.0, 1.0);
-        
-        color.rgb = getSaturation(color.rgb, uSaturation);
-        */
-        
+const vec3 thickColor = vec3(0.25,0.5,0.75);
+const vec3 lightDirection = vec3(0,0,1);
+const vec3 lightPosition = vec3(0,0,-1);
+const vec3 lightColor = vec3(.5,.5,.5);
+const float thicknessDistortion = .5;
+const float thicknessPower = 1.5;
+const float thicknessScale = 10.;
+const vec3 thicknessAmbient = vec3(0,0,0);
+const float thicknessAttenuation = .1;
 
-
-        color.r += textureCube(cubemap,refractRed).r;
-        color.g += textureCube(cubemap,refractGreen).g;
-        color.b += textureCube(cubemap,refractBlue).g;
-        // color.rgb = textureCube(cubemap, refract(worldEye, vNormal, uIorR));  
-
-
-    }
-    color /= float(LOOP);
-    return color;
-}
+void getScattering(vec3 position, vec3 normals, vec3 view, inout vec3 scattering) {
+			vec3 thickness = thickColor * pow((1.0 - abs(dot(normals, view))),2.);
+			vec3 scatteringHalf = normalize(lightDirection + (normals * thicknessDistortion));
+			float scatteringDot = pow(saturate(dot(view, -scatteringHalf)), thicknessPower) * thicknessScale;
+			vec3 scatteringIllu = (scatteringDot + thicknessAmbient) * thickness;
+            scattering += scatteringIllu * thicknessAttenuation * lightColor;
+		}
 
 void main() {
    
@@ -276,9 +250,13 @@ void main() {
 
     float f = getFresnel(worldEye, vNormal, 2.);
 
-    // Just output the raw cubemap reflection
-    gl_FragColor = mix(reflColor, refrColor, f);
-    gl_FragColor.a = f;
+    vec3 scattering = vec3(0.);
+    getScattering(vPosition, vNormal, worldEye, scattering);
+    float p = pow((1.0 - abs(dot(vNormal, worldEye))),2.);
+    vec3 dev = vec3(p);
+    
+    gl_FragColor = vec4(dev, 1.);//mix(reflColor, refrColor, f);
+    // gl_FragColor.a = f;
     
 }
 `;
@@ -287,14 +265,14 @@ const transluscentMaterial = new THREE.ShaderMaterial({
   uniforms,
   vertexShader,
   fragmentShader,
-  transparent: true,
+  transparent: false,
   side: THREE.DoubleSide,
-  depthWrite: false,
-  depthTest: true,
-  blending: THREE.CustomBlending,
-  blendSrc: THREE.SrcAlphaFactor,
-  blendDst: THREE.OneMinusSrcAlphaFactor,
-  blendEquation: THREE.AddEquation,
+  //   depthWrite: false,
+  //   depthTest: true,
+  //   blending: THREE.CustomBlending,
+  //   blendSrc: THREE.SrcAlphaFactor,
+  //   blendDst: THREE.OneMinusSrcAlphaFactor,
+  //   blendEquation: THREE.AddEquation,
 });
 
 const createBubble = () => {
